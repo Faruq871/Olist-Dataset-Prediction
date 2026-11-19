@@ -178,7 +178,7 @@ Launch Jupyter Notebook:
 jupyter notebook
 ```
 
-Open `Olist_End_to_End_Data_Science.ipynb` and execute the cells sequentially.
+Open `Data_Science.ipynb` and execute the cells sequentially.
 
 ### Option 2: R Markdown
 
@@ -193,7 +193,7 @@ install.packages(c(
 ))
 ```
 
-Open `Olist_End_to_End_Data_Science.Rmd` in RStudio and use the **Knit** function to render the report.
+Open `Data_Science.Rmd` in RStudio and use the **Knit** function to render the report.
 
 ### Option 3: Quarto
 
@@ -202,7 +202,7 @@ Install the required Python libraries and [Quarto](https://quarto.org/).
 Render the document:
 
 ```bash
-quarto render Olist_End_to_End_Data_Science.qmd
+quarto render Data_Science.qmd
 ```
 
 ## Important Notes
