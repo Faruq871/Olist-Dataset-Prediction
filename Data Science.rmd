@@ -1,0 +1,1159 @@
+
+---
+title: "Olist Brazilian E-Commerce: End-to-End Data Science"
+author: "Data Science Project"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: readable
+---
+
+# 1. Environment and Libraries
+
+This project presents an end-to-end data science analysis of the Brazilian E-Commerce Public Dataset by Olist. The workflow covers data acquisition, data understanding, data preprocessing, exploratory data analysis, statistical hypothesis testing, customer segmentation, and predictive modeling.
+
+## 1.1 Install and Load Libraries
+```{r}
+library(tidyverse)
+library(tibble)
+```
+
+
+```{r setup, message=FALSE, warning=FALSE}
+required_packages <- c(
+  "tidyverse", "lubridate", "janitor", "skimr",
+  "naniar", "GGally", "broom", "scales",
+  "tidymodels", "ranger", "isotree"
+)
+
+new_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+set.seed(1)
+theme_set(theme_minimal(base_size = 12))
+
+options(
+  scipen = 999,
+  dplyr.summarise.inform = FALSE
+)
+```
+
+# 2. Data Acquisition
+
+The dataset can be obtained from Kaggle. This section uses the Kaggle CLI to download the dataset automatically.
+
+Make sure that the Kaggle CLI is installed and your Kaggle API credentials are configured. Alternatively, download the dataset manually and place all CSV files inside the `data` directory.
+
+```{r data-acquisition, message=FALSE, warning=FALSE}
+csv_files <- list.files(
+  "C:/Users/Users/Downloads/olist_data",
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+if (length(csv_files) == 0) {
+  stop("No CSV files were found in the data directory.")
+}
+
+data_list <- setNames(
+  lapply(csv_files, readr::read_csv, show_col_types = FALSE),
+  tools::file_path_sans_ext(basename(csv_files))
+)
+
+names(data_list)
+```
+
+## 2.1 Load Individual Tables
+
+```{r load-tables}
+orders <- data_list[["olist_orders_dataset"]]
+customers <- data_list[["olist_customers_dataset"]]
+order_items <- data_list[["olist_order_items_dataset"]]
+products <- data_list[["olist_products_dataset"]]
+sellers <- data_list[["olist_sellers_dataset"]]
+payments <- data_list[["olist_order_payments_dataset"]]
+reviews <- data_list[["olist_order_reviews_dataset"]]
+categories <- data_list[["product_category_name_translation"]]
+
+required_tables <- c(
+  "orders", "customers", "order_items", "products",
+  "sellers", "payments", "reviews", "categories"
+)
+
+missing_tables <- required_tables[
+  !vapply(required_tables, function(x) !is.null(get(x)), logical(1))
+]
+
+if (length(missing_tables) > 0) {
+  stop(
+    "Missing required datasets: ",
+    paste(missing_tables, collapse = ", ")
+  )
+}
+
+rm(data_list, csv_files, required_tables, missing_tables)
+```
+
+# 3. Data Understanding and Quality Assessment
+
+## 3.1 Dataset Overview
+
+The Olist dataset consists of multiple relational tables. Each table has a different level of granularity, which must be considered before joining the data.
+
+```{r dataset-overview}
+dataset_overview <- tibble(
+  dataset = c(
+    "orders", "customers", "order_items", "products",
+    "sellers", "payments", "reviews", "categories"
+  ),
+  rows = c(
+    nrow(orders), nrow(customers), nrow(order_items),
+    nrow(products), nrow(sellers), nrow(payments),
+    nrow(reviews), nrow(categories)
+  ),
+  columns = c(
+    ncol(orders), ncol(customers), ncol(order_items),
+    ncol(products), ncol(sellers), ncol(payments),
+    ncol(reviews), ncol(categories)
+  )
+)
+
+knitr::kable(dataset_overview)
+```
+
+## 3.2 Data Structure
+
+The structure of each dataset is inspected to identify variable types, column names, and potential inconsistencies.
+
+```{r data-structure}
+glimpse(orders)
+glimpse(order_items)
+glimpse(customers)
+glimpse(products)
+```
+
+## 3.3 Missing Value Assessment
+
+Missing values are evaluated to understand the completeness of each variable and identify columns that may require additional preprocessing.
+
+```{r missing-values}
+missing_summary <- function(data) {
+  tibble(
+    column = names(data),
+    missing_count = vapply(
+      data,
+      function(x) sum(is.na(x)),
+      integer(1)
+    ),
+    missing_percentage = vapply(
+      data,
+      function(x) mean(is.na(x)) * 100,
+      numeric(1)
+    )
+  ) |>
+    arrange(desc(missing_percentage))
+}
+
+missing_summary(orders)
+```
+
+```{r missing-visualization, fig.height=5}
+naniar::vis_miss(orders)
+```
+
+## 3.4 Duplicate Assessment
+
+Duplicate records are examined across the main datasets. Duplicate counts should be interpreted in the context of each table's structure.
+
+```{r duplicate-assessment}
+duplicate_summary <- tibble(
+  dataset = c(
+    "orders", "customers", "order_items",
+    "products", "sellers", "payments", "reviews"
+  ),
+  duplicate_rows = c(
+    sum(duplicated(orders)),
+    sum(duplicated(customers)),
+    sum(duplicated(order_items)),
+    sum(duplicated(products)),
+    sum(duplicated(sellers)),
+    sum(duplicated(payments)),
+    sum(duplicated(reviews))
+  )
+)
+
+knitr::kable(duplicate_summary)
+```
+
+## 3.5 Relational Structure
+
+The main relationships between the datasets are:
+
+- `orders` serves as the central transaction table.
+- `customers` is linked through `customer_id`.
+- `order_items` is linked through `order_id`.
+- `products` and `sellers` are connected through `order_items`.
+- `payments` and `reviews` are also linked through `order_id`.
+
+A single order may contain multiple items, payment records, or review records. Joining these tables directly may multiply rows. Therefore, the relevant tables should be aggregated before constructing an order-level analytical dataset.
+
+# 4. Data Preprocessing and Feature Engineering
+
+## 4.1 Datetime Conversion
+
+Timestamp columns are converted into datetime objects to support temporal calculations and feature extraction.
+
+```{r datetime-conversion}
+datetime_columns <- c(
+  "order_purchase_timestamp",
+  "order_approved_at",
+  "order_delivered_carrier_date",
+  "order_delivered_customer_date",
+  "order_estimated_delivery_date"
+)
+
+orders <- orders |>
+  mutate(
+    across(
+      all_of(datetime_columns),
+      ~ lubridate::ymd_hms(.x, quiet = TRUE)
+    )
+  )
+```
+
+## 4.2 Order-Level Aggregation
+
+### Item Aggregation
+
+Item-level records are aggregated to produce one row per order.
+
+```{r item-aggregation}
+item_summary <- order_items |>
+  group_by(order_id) |>
+  summarise(
+    item_count = n(),
+    total_price = sum(price, na.rm = TRUE),
+    total_freight = sum(freight_value, na.rm = TRUE),
+    avg_price = mean(price, na.rm = TRUE),
+    avg_freight = mean(freight_value, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### Payment Aggregation
+
+Payment records are aggregated to avoid duplicating orders during the merge process.
+
+```{r payment-aggregation}
+payment_summary <- payments |>
+  group_by(order_id) |>
+  summarise(
+    payment_value = sum(payment_value, na.rm = TRUE),
+    payment_installments = max(
+      payment_installments,
+      na.rm = TRUE
+    ),
+    payment_types = n_distinct(payment_type),
+    .groups = "drop"
+  )
+```
+
+### Review Aggregation
+
+```{r review-aggregation}
+review_summary <- reviews |>
+  group_by(order_id) |>
+  summarise(
+    review_score = mean(review_score, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### Customer Information
+
+The unique customer identifier is retained for the subsequent RFM analysis.
+
+```{r customer-information}
+customer_summary <- customers |>
+  select(
+    customer_id,
+    customer_unique_id,
+    customer_city,
+    customer_state
+  )
+```
+
+### Merge Order-Level Data
+
+```{r merge-order-data}
+order_level <- orders |>
+  left_join(item_summary, by = "order_id") |>
+  left_join(payment_summary, by = "order_id") |>
+  left_join(review_summary, by = "order_id") |>
+  left_join(customer_summary, by = "customer_id")
+
+dim(order_level)
+head(order_level)
+```
+
+## 4.3 Delivery and Transaction Features
+
+Several temporal variables are engineered to measure order processing and delivery performance.
+
+```{r delivery-features}
+order_level <- order_level |>
+  mutate(
+    approval_duration = as.numeric(
+      difftime(
+        order_approved_at,
+        order_purchase_timestamp,
+        units = "days"
+      )
+    ),
+    delivery_duration = as.numeric(
+      difftime(
+        order_delivered_customer_date,
+        order_purchase_timestamp,
+        units = "days"
+      )
+    ),
+    shipping_duration = as.numeric(
+      difftime(
+        order_delivered_customer_date,
+        order_delivered_carrier_date,
+        units = "days"
+      )
+    ),
+    estimated_delivery_duration = as.numeric(
+      difftime(
+        order_estimated_delivery_date,
+        order_purchase_timestamp,
+        units = "days"
+      )
+    ),
+    delivery_delay = as.numeric(
+      difftime(
+        order_delivered_customer_date,
+        order_estimated_delivery_date,
+        units = "days"
+      )
+    )
+  )
+```
+
+### Calendar Features
+
+```{r calendar-features}
+order_level <- order_level |>
+  mutate(
+    purchase_year = year(order_purchase_timestamp),
+    purchase_month = month(
+      order_purchase_timestamp,
+      label = TRUE,
+      abbr = TRUE
+    ),
+    purchase_day = day(order_purchase_timestamp),
+    purchase_weekday = wday(
+      order_purchase_timestamp,
+      label = TRUE
+    ),
+    purchase_hour = hour(order_purchase_timestamp),
+    is_weekend = wday(order_purchase_timestamp) %in% c(1, 7)
+  )
+```
+
+## 4.4 Product Characteristics
+
+Product dimensions and weight are aggregated at the order level to provide additional information about shipment characteristics.
+
+```{r product-features}
+product_summary <- order_items |>
+  left_join(
+    products |>
+      select(
+        product_id,
+        product_category_name,
+        product_weight_g,
+        product_length_cm,
+        product_height_cm,
+        product_width_cm
+      ),
+    by = "product_id"
+  ) |>
+  mutate(
+    product_volume_cm3 =
+      product_length_cm *
+      product_height_cm *
+      product_width_cm
+  ) |>
+  group_by(order_id) |>
+  summarise(
+    avg_product_weight = mean(product_weight_g, na.rm = TRUE),
+    avg_product_volume = mean(product_volume_cm3, na.rm = TRUE),
+    product_categories = n_distinct(product_category_name),
+    .groups = "drop"
+  )
+
+order_level <- order_level |>
+  left_join(product_summary, by = "order_id")
+```
+
+## 4.5 Outlier Screening
+
+Isolation Forest is used to identify observations with unusual patterns. Identified outliers are not automatically removed because extreme values may represent valid transactions.
+
+```{r outlier-screening, message=FALSE, warning=FALSE}
+outlier_features <- order_level |>
+  select(
+    total_price,
+    total_freight,
+    item_count,
+    delivery_duration
+  ) |>
+  mutate(
+    across(
+      everything(),
+      ~ replace_na(.x, median(.x, na.rm = TRUE))
+    )
+  )
+
+outlier_model <- isotree::isolation.forest(
+  outlier_features,
+  ntrees = 100,
+  sample_size = min(256, nrow(outlier_features)),
+  seed = 42
+)
+
+order_level$outlier_score <- predict(
+  outlier_model,
+  outlier_features,
+  type = "score"
+)
+
+summary(order_level$outlier_score)
+```
+
+# 5. Exploratory Data Analysis
+
+## 5.1 Descriptive Statistics
+
+Descriptive statistics are used to examine the central tendency, dispersion, and distribution of important numerical variables.
+
+```{r descriptive-statistics}
+order_level |>
+  select(
+    total_price,
+    total_freight,
+    item_count,
+    delivery_duration,
+    approval_duration,
+    shipping_duration
+  ) |>
+  summary()
+```
+
+## 5.2 Distribution of Numerical Variables
+
+```{r numerical-distribution, fig.height=7}
+order_level |>
+  select(
+    total_price,
+    total_freight,
+    delivery_duration,
+    approval_duration
+  ) |>
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "value"
+  ) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(
+    bins = 40,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(
+    title = "Distribution of Numerical Variables",
+    x = "Value",
+    y = "Frequency"
+  )
+```
+
+## 5.3 Correlation Analysis
+
+Correlation analysis is performed to examine linear associations among numerical variables. Correlation does not imply causation.
+
+```{r correlation-analysis, fig.height=6}
+correlation_data <- order_level |>
+  select(
+    total_price,
+    total_freight,
+    item_count,
+    delivery_duration,
+    approval_duration,
+    shipping_duration,
+    estimated_delivery_duration
+  )
+
+GGally::ggcorr(
+  correlation_data,
+  label = TRUE,
+  label_round = 2,
+  label_size = 3
+)
+```
+
+## 5.4 Monthly Order Volume and Delivery Duration
+
+Monthly aggregation is used to examine changes in transaction activity and delivery performance over time.
+
+```{r monthly-analysis}
+monthly_analysis <- order_level |>
+  filter(!is.na(order_purchase_timestamp)) |>
+  mutate(
+    purchase_month = floor_date(
+      order_purchase_timestamp,
+      unit = "month"
+    )
+  ) |>
+  group_by(purchase_month) |>
+  summarise(
+    order_volume = n_distinct(order_id),
+    avg_delivery_duration = mean(
+      delivery_duration,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+knitr::kable(head(monthly_analysis, 12))
+```
+
+### Monthly Order Volume
+
+```{r monthly-order-volume, fig.height=5}
+ggplot(
+  monthly_analysis,
+  aes(purchase_month, order_volume)
+) +
+  geom_line(linewidth = 0.8, color = "steelblue") +
+  geom_point() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Monthly Order Volume",
+    x = "Purchase Month",
+    y = "Number of Orders"
+  )
+```
+
+### Average Delivery Duration
+
+```{r monthly-delivery-duration, fig.height=5}
+ggplot(
+  monthly_analysis,
+  aes(purchase_month, avg_delivery_duration)
+) +
+  geom_line(linewidth = 0.8, color = "darkorange") +
+  geom_point() +
+  labs(
+    title = "Average Delivery Duration Over Time",
+    x = "Purchase Month",
+    y = "Average Delivery Duration (Days)"
+  )
+```
+
+Interpretation: These visualizations provide an overview of transaction activity and delivery performance over time. Similar movements between order volume and delivery duration do not establish a causal relationship. Other factors, such as seasonal demand, logistics capacity, and customer location, may also influence delivery performance.
+
+## 5.5 Order Status Analysis
+
+```{r order-status}
+order_level |>
+  group_by(order_status) |>
+  summarise(
+    total_orders = n_distinct(order_id),
+    avg_delivery_days = mean(delivery_duration, na.rm = TRUE),
+    median_delivery_days = median(delivery_duration, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(total_orders)) |>
+  knitr::kable()
+```
+
+## 5.6 Hypothesis Testing: Weekday vs Weekend
+
+The objective is to determine whether delivery duration distributions differ between orders purchased on weekdays and weekends.
+
+Hypotheses:
+
+- H0: The delivery duration distributions are equal between weekdays and weekends.
+- H1: The delivery duration distributions differ between weekdays and weekends.
+
+The Mann-Whitney U test is used because it does not require normally distributed observations.
+
+```{r mann-whitney-test}
+test_data <- order_level |>
+  filter(
+    !is.na(delivery_duration),
+    delivery_duration >= 0
+  )
+
+weekday_group <- test_data |>
+  filter(!is_weekend) |>
+  pull(delivery_duration)
+
+weekend_group <- test_data |>
+  filter(is_weekend) |>
+  pull(delivery_duration)
+
+mann_whitney_result <- wilcox.test(
+  weekday_group,
+  weekend_group,
+  alternative = "two.sided",
+  exact = FALSE
+)
+
+mann_whitney_result
+```
+
+### Statistical Decision
+
+```{r hypothesis-interpretation}
+alpha <- 0.05
+p_value <- mann_whitney_result$p.value
+
+if (p_value < alpha) {
+  cat(
+    "Decision: Reject H0. There is sufficient statistical evidence ",
+    "that delivery duration distributions differ between weekdays and weekends."
+  )
+} else {
+  cat(
+    "Decision: Fail to reject H0. There is insufficient statistical evidence ",
+    "to conclude that delivery duration distributions differ."
+  )
+}
+```
+
+## 5.7 Customer RFM Analysis
+
+RFM analysis evaluates customer behavior using three dimensions:
+
+- Recency: the number of days since the customer's most recent purchase.
+- Frequency: the number of distinct orders placed by the customer.
+- Monetary: the total transaction value generated by the customer.
+
+```{r rfm-analysis}
+reference_date <- max(
+  order_level$order_purchase_timestamp,
+  na.rm = TRUE
+) + days(1)
+
+rfm_data <- order_level |>
+  filter(
+    !is.na(order_purchase_timestamp),
+    !is.na(customer_unique_id)
+  ) |>
+  group_by(customer_unique_id) |>
+  summarise(
+    recency = as.numeric(
+      difftime(
+        reference_date,
+        max(order_purchase_timestamp),
+        units = "days"
+      )
+    ),
+    frequency = n_distinct(order_id),
+    monetary = sum(total_price, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+rfm_data <- rfm_data |>
+  mutate(
+    R_score = ntile(-recency, 5),
+    F_score = ntile(frequency, 5),
+    M_score = ntile(monetary, 5),
+    RFM_score = R_score + F_score + M_score
+  )
+
+summary(rfm_data)
+```
+
+```{r rfm-visualization, fig.height=5}
+ggplot(
+  rfm_data,
+  aes(frequency, monetary)
+) +
+  geom_point(alpha = 0.35) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Customer Frequency vs Monetary Value",
+    x = "Purchase Frequency",
+    y = "Monetary Value"
+  )
+```
+
+# 6. Predictive Modeling: Delivery Delay Classification
+
+## 6.1 Target Definition
+
+The objective is to predict whether an order experiences a delivery delay.
+
+The target variable is defined as follows:
+
+- `Late`: the actual delivery timestamp is later than the estimated delivery timestamp.
+- `OnTime`: the actual delivery timestamp is equal to or earlier than the estimated delivery timestamp.
+
+Only successfully delivered orders with both timestamps available are included.
+
+```{r target-definition}
+model_data <- order_level |>
+  filter(
+    order_status == "delivered",
+    !is.na(order_delivered_customer_date),
+    !is.na(order_estimated_delivery_date)
+  ) |>
+  mutate(
+    is_late = factor(
+      if_else(
+        order_delivered_customer_date >
+          order_estimated_delivery_date,
+        "Late",
+        "OnTime"
+      ),
+      levels = c("OnTime", "Late")
+    )
+  )
+
+count(model_data, is_late)
+```
+
+## 6.2 Predictor Selection and Data Leakage Prevention
+
+Predictors are selected from transaction and order characteristics that can reasonably be available before the final delivery outcome is known.
+
+Actual delivery timestamps, carrier handover timestamps, actual delivery duration, delivery delay, and review information are excluded because they may introduce target leakage.
+
+```{r predictor-selection}
+model_data <- model_data |>
+  mutate(
+    customer_state = as.factor(customer_state),
+    purchase_month = as.factor(purchase_month),
+    purchase_weekday = as.factor(purchase_weekday)
+  )
+
+predictor_data <- model_data |>
+  select(
+    is_late,
+    total_price,
+    total_freight,
+    item_count,
+    avg_price,
+    avg_freight,
+    estimated_delivery_duration,
+    approval_duration,
+    avg_product_weight,
+    avg_product_volume,
+    product_categories,
+    payment_value,
+    payment_installments,
+    payment_types,
+    purchase_year,
+    purchase_month,
+    purchase_day,
+    purchase_weekday,
+    purchase_hour,
+    is_weekend,
+    customer_state
+  )
+```
+
+## 6.3 Chronological Train-Test Split
+
+The dataset is sorted by purchase timestamp before splitting. The earliest 80% of observations are used for training, while the most recent 20% are reserved for testing.
+
+This approach simulates the practical scenario of predicting future orders using historical data.
+
+```{r chronological-split}
+model_data <- model_data |>
+  arrange(order_purchase_timestamp)
+
+predictor_data <- model_data |>
+  select(
+    is_late,
+    total_price,
+    total_freight,
+    item_count,
+    avg_price,
+    avg_freight,
+    estimated_delivery_duration,
+    approval_duration,
+    avg_product_weight,
+    avg_product_volume,
+    product_categories,
+    payment_value,
+    payment_installments,
+    payment_types,
+    purchase_year,
+    purchase_month,
+    purchase_day,
+    purchase_weekday,
+    purchase_hour,
+    is_weekend,
+    customer_state
+  )
+
+split_index <- floor(nrow(model_data) * 0.80)
+
+train_data <- predictor_data[seq_len(split_index), ] |>
+  droplevels()
+
+test_data <- predictor_data[
+  seq.int(split_index + 1, nrow(predictor_data)),
+] |>
+  droplevels()
+
+count(train_data, is_late)
+count(test_data, is_late)
+```
+
+## 6.4 Preprocessing and Model Training
+
+The preprocessing workflow includes:
+
+- Median imputation for numerical predictors.
+- Mode imputation for categorical predictors.
+- One-hot encoding for categorical variables.
+
+Random Forest is used as the primary classification algorithm.
+
+```{r model-training, message=FALSE, warning=FALSE}
+rf_recipe <- recipe(
+  is_late ~ .,
+  data = train_data
+) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_impute_mode(all_nominal_predictors()) |>
+  step_unknown(all_nominal_predictors()) |>
+  step_novel(all_nominal_predictors()) |>
+  step_dummy(all_nominal_predictors())
+
+class_counts <- table(train_data$is_late)
+
+class_weights <- length(train_data$is_late) /
+  (length(class_counts) * class_counts)
+
+rf_model <- rand_forest(
+  trees = 300,
+  min_n = 2
+) |>
+  set_engine(
+    "ranger",
+    importance = "permutation",
+    class.weights = as.numeric(class_weights)
+  ) |>
+  set_mode("classification")
+
+rf_workflow <- workflow() |>
+  add_recipe(rf_recipe) |>
+  add_model(rf_model)
+
+rf_fit <- fit(
+  rf_workflow,
+  data = train_data
+)
+
+rf_fit
+```
+
+## 6.5 Baseline Model
+
+A majority-class baseline is used to establish a simple reference performance. The Random Forest model should be evaluated against this baseline rather than being assessed in isolation.
+
+```{r baseline-model}
+majority_class <- names(
+  which.max(table(train_data$is_late))
+)
+
+baseline_predictions <- factor(
+  rep(majority_class, nrow(test_data)),
+  levels = levels(test_data$is_late)
+)
+
+baseline_results <- tibble(
+  truth = test_data$is_late,
+  estimate = baseline_predictions
+)
+
+baseline_metrics <- tibble(
+  metric = c("Accuracy", "Precision", "Recall", "F1-score"),
+  value = c(
+    accuracy_vec(
+      baseline_results$truth,
+      baseline_results$estimate
+    ),
+    precision_vec(
+      baseline_results$truth,
+      baseline_results$estimate,
+      event_level = "second"
+    ),
+    recall_vec(
+      baseline_results$truth,
+      baseline_results$estimate,
+      event_level = "second"
+    ),
+    f_meas_vec(
+      baseline_results$truth,
+      baseline_results$estimate,
+      event_level = "second"
+    )
+  )
+)
+
+knitr::kable(baseline_metrics, digits = 4)
+```
+
+## 6.6 Model Evaluation
+
+```{r model-predictions}
+rf_probabilities <- predict(
+  rf_fit,
+  new_data = test_data,
+  type = "prob"
+)
+
+rf_classes <- predict(
+  rf_fit,
+  new_data = test_data,
+  type = "class"
+)
+
+rf_predictions <- bind_cols(
+  tibble(truth = test_data$is_late),
+  rf_classes,
+  rf_probabilities
+)
+
+head(rf_predictions)
+```
+
+### Classification Metrics
+
+```{r classification-metrics}
+classification_metrics <- bind_rows(
+  accuracy(rf_predictions, truth, .pred_class),
+  precision(
+    rf_predictions,
+    truth,
+    .pred_class,
+    event_level = "second"
+  ),
+  recall(
+    rf_predictions,
+    truth,
+    .pred_class,
+    event_level = "second"
+  ),
+  f_meas(
+    rf_predictions,
+    truth,
+    .pred_class,
+    event_level = "second"
+  )
+)
+
+roc_auc_result <- roc_auc(
+  rf_predictions,
+  truth,
+  .pred_Late,
+  event_level = "second"
+)
+
+pr_auc_result <- pr_auc(
+  rf_predictions,
+  truth,
+  .pred_Late,
+  event_level = "second"
+)
+
+classification_metrics
+roc_auc_result
+pr_auc_result
+```
+
+## 6.7 Confusion Matrix
+
+The confusion matrix provides a detailed view of correct and incorrect predictions for both classes.
+
+```{r confusion-matrix}
+conf_mat(
+  rf_predictions,
+  truth = truth,
+  estimate = .pred_class
+)
+```
+
+## 6.8 ROC Curve and Precision-Recall Curve
+
+```{r roc-curve, fig.height=5}
+roc_curve(
+  rf_predictions,
+  truth,
+  .pred_Late,
+  event_level = "second"
+) |>
+  autoplot() +
+  labs(title = "ROC Curve - Random Forest")
+```
+
+```{r pr-curve, fig.height=5}
+pr_curve(
+  rf_predictions,
+  truth,
+  .pred_Late,
+  event_level = "second"
+) |>
+  autoplot() +
+  labs(title = "Precision-Recall Curve - Random Forest")
+```
+
+## 6.9 Threshold Analysis
+
+The classification threshold determines the minimum predicted probability required to classify an order as late.
+
+A lower threshold generally increases recall but may reduce precision by generating more false positive predictions.
+
+```{r threshold-analysis}
+thresholds <- c(
+  0.20, 0.30, 0.40,
+  0.50, 0.60, 0.70
+)
+
+threshold_results <- purrr::map_dfr(
+  thresholds,
+  function(threshold) {
+    predicted_class <- factor(
+      if_else(
+        rf_predictions$.pred_Late >= threshold,
+        "Late",
+        "OnTime"
+      ),
+      levels = c("OnTime", "Late")
+    )
+
+    tibble(
+      truth = rf_predictions$truth,
+      estimate = predicted_class
+    ) |>
+      summarise(
+        threshold = threshold,
+        precision = precision_vec(
+          truth,
+          estimate,
+          event_level = "second"
+        ),
+        recall = recall_vec(
+          truth,
+          estimate,
+          event_level = "second"
+        ),
+        f1 = f_meas_vec(
+          truth,
+          estimate,
+          event_level = "second"
+        )
+      )
+  }
+)
+
+knitr::kable(threshold_results, digits = 4)
+```
+
+```{r threshold-visualization, fig.height=5}
+threshold_results |>
+  pivot_longer(
+    cols = c(precision, recall, f1),
+    names_to = "metric",
+    values_to = "score"
+  ) |>
+  ggplot(aes(threshold, score, color = metric)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Performance Across Classification Thresholds",
+    x = "Classification Threshold",
+    y = "Score",
+    color = "Metric"
+  )
+```
+
+## 6.10 Feature Importance
+
+Permutation importance is used to evaluate how much model performance decreases when the values of a predictor are randomly shuffled.
+
+```{r feature-importance}
+importance_values <- ranger::importance(
+  extract_fit_parsnip(rf_fit)$fit
+)
+
+importance_data <- tibble(
+  feature = names(importance_values),
+  importance = as.numeric(importance_values)
+) |>
+  arrange(desc(importance)) |>
+  slice_head(n = 15)
+
+knitr::kable(importance_data, digits = 4)
+```
+
+```{r feature-importance-plot, fig.height=6}
+ggplot(
+  importance_data,
+  aes(
+    x = reorder(feature, importance),
+    y = importance
+  )
+) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 15 Feature Importance",
+    x = "Feature",
+    y = "Permutation Importance"
+  )
+```
+
+# 7. Conclusion and Further Work
+
+## 7.1 Conclusion
+
+This project presents an end-to-end analysis of the Olist Brazilian E-Commerce dataset.
+
+The main analytical stages include:
+
+1. Data understanding and quality assessment.
+2. Data preprocessing and feature engineering.
+3. Exploratory data analysis.
+4. Statistical hypothesis testing using the Mann-Whitney U test.
+5. Customer segmentation using RFM analysis.
+6. Delivery delay classification using Random Forest.
+7. Model evaluation, threshold analysis, and feature importance.
+
+Quantitative conclusions should be based on the actual outputs generated by the analysis. Descriptive patterns should not automatically be interpreted as causal relationships.
+
+## 7.2 Limitations
+
+Several limitations should be considered:
+
+- The dataset represents historical transactions and may not reflect current operational conditions.
+- The classification task only includes successfully delivered orders with available actual and estimated delivery timestamps.
+- The available variables may not fully represent operational logistics conditions.
+- Temporal distribution shifts may affect the generalization performance of the model.
+- Feature importance measures predictive contribution rather than causal influence.
