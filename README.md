@@ -149,11 +149,12 @@ Features that would only become available after delivery are excluded to reduce 
 ## Repository Structure
 
 ```text
-olist-ecommerce-data-science/
+Olist-Dataset-Prediction/
 │
-├── Data_Science.ipynb
-├── Data_Science.Rmd
-├── Data_Science.qmd
+├── code/
+|   ├── Data_Science.ipynb
+|   ├── Data_Science.Rmd
+|   └── Data_Science.qmd
 │
 ├── README.md
 ├── LICENSE
