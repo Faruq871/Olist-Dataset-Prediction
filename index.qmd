@@ -1,0 +1,29 @@
+---
+title: "Brazilian E-Commerce Data Science"
+subtitle: "Project Using Python and R"
+---
+
+# Project Overview
+This project explores the Brazilian E-Commerce Public Dataset by Olist through a comprehensive Data Science workflow.
+
+## Python — Jupyter Notebook
+Interactive analytical workflow using Python and its Data Science ecosystem.
+(Data_Science.ipynb)
+
+## R — R Markdown
+Statistical analysis and predictive modeling using the R programming language.
+(Data_Science.Rmd)
+
+## Python — Quarto
+A reproducible analytical report using Python and Quarto.
+(Data_Science.qmd)
+
+## Analytical Workflow
+
+1. Data Acquisition
+2. Data Understanding and Quality Assessment
+3. Data Preprocessing and Feature Engineering
+4. Exploratory Data Analysis
+5. Statistical Analysis
+6. Predictive Modeling
+7. Conclusion and Further Work
