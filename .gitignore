@@ -1,0 +1,32 @@
+
+# Data files
+data/
+*.csv
+*.parquet
+*.xlsx
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# R
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Rendered files
+*.html
+*.pdf
+*_files/
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
