@@ -1,0 +1,31 @@
+
+project:
+  type: website
+  render:
+    - index.qmd
+    - Data_Science.ipynb
+    - Data_Science.Rmd
+    - Data_Science.qmd
+
+website:
+  title: "Olist Data Science Project"
+  description: "Data science using Python and R"
+  navbar:
+    background: primary
+    left:
+      - href: index.qmd
+        text: Home
+      - href: Data_Science.ipynb
+        text: Python Notebook
+      - href: Data_Science.Rmd
+        text: R Markdown
+      - href: Data_Science.qmd
+        text: Quarto
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-copy: true
+    code-fold: false
+    number-sections: true
