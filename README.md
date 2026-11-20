@@ -12,7 +12,7 @@ This repository provides three different ways to explore and execute the project
 | File | Language | Framework | Description |
 |---|---|---|---|
 | `Data_Science.ipynb` | Python | Jupyter Notebook | Interactive Python-based analysis |
-| `Data_Science.Rmd` | R | R Markdown | Reproducible statistical analysis and modeling |
+| `Data_Science.rmd` | R | R Markdown | Reproducible statistical analysis and modeling |
 | `Data_Science.qmd` | Python | Quarto | Python-based analytical report |
 
 ## Project Overview
